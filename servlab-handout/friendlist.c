@@ -27,8 +27,19 @@ static void handle_friends(int fd, dictionary_t *query);
 static void handle_introduce(int fd, dictionary_t *query);
 static void add_friend(const char *user, const char *friend);
 static void remove_friend(const char *user, const char *friend);
+static void different_server(char *user, char *friend, char *host, char *port);
+static int is_same_server(const char *host, const char *port);
+
+void *thread(void *vargp) {
+    int i = *((int *)vargp);
+    Free(vargp);
+    //doit(i);
+    //Close(i);
+    return NULL;
+}
 
 static dictionary_t *user_list;
+static char server_port[MAXLINE];
 //static char* create_request_body(dictionary_t *query);
 
 int main(int argc, char **argv) {
@@ -56,10 +67,21 @@ int main(int argc, char **argv) {
   /* Also, don't stop on broken connections: */
   Signal(SIGPIPE, SIG_IGN);
 
+  //adding set server port to global
+  strncpy(server_port, argv[1], sizeof(server_port) - 1);
+
   while (1) {
     clientlen = sizeof(clientaddr);
     connfd = Accept(listenfd, (SA *)&clientaddr, &clientlen);
     if (connfd >= 0) {
+      pthread_t tid;
+      int *connfdp = Malloc(sizeof(int));  
+     // *connfdp = connfd;
+     // Pthread_create(&tid, NULL, thread, connfdp);
+      //Pthread_detach(tid);
+
+      //pthread_join(&tid, NULL);
+      
       Getnameinfo((SA *) &clientaddr, clientlen, hostname, MAXLINE, 
                   port, MAXLINE, 0);
       printf("Accepted connection from (%s, %s)\n", hostname, port);
@@ -102,6 +124,7 @@ void doit(int fd) {
       clienterror(fd, method, "501", "Not Implemented",
                   "Friendlist does not implement that method");
     } else {
+      printf("get it\n");
       headers = read_requesthdrs(&rio);
       /* Parse all query arguments into a dictionary */
       query = make_dictionary(COMPARE_CASE_SENS, free);
@@ -205,7 +228,6 @@ static void serve_request(int fd, char *body) {
   char *header;
   //adding
   len = strlen(body);
-
   /* Send response headers to client */
   header = ok_header(len, "text/html; charset=utf-8");
   Rio_writen(fd, header, strlen(header));
@@ -300,17 +322,22 @@ void handle_befriend(int fd, dictionary_t *query) {
 }
 
 void handle_friends(int fd, dictionary_t *query) { 
+  printf("322\n");
    char *user = dictionary_get(query, "user");
-    dictionary_t *user_friend_list = dictionary_get(user_list, user);
-
+   printf("user %s\n", user);
+   dictionary_t *user_friend_list = dictionary_get(user_list, user);
+printf("329\n");
     char *body = NULL;
     if (user_friend_list) {
+      printf("332\n");
         const char **keys = dictionary_keys(user_friend_list);
         body = join_strings(keys, '\n');
+        printf("all friends %s\n", body);
         free(keys);
     } else {
         body = strdup("");
     }
+    printf("body %s", body);
     serve_request(fd, body);
     free(body);
 }
@@ -328,71 +355,98 @@ void handle_unfriend(int fd, dictionary_t *query) {
   handle_friends(fd, query);
 }
 
-void handle_introduce(int fd, dictionary_t *query) { 
-  char *user = dictionary_get(query, "user");
-  char *friend = dictionary_get(query, "friend");
-  char *host = dictionary_get(query, "host");
-  char *port = dictionary_get(query, "port");
+void handle_introduce(int fd, dictionary_t *query) {
+    char *user = dictionary_get(query, "user");
+    char *friend = dictionary_get(query, "friend");
+    char *host = dictionary_get(query, "host");
+    char *port = dictionary_get(query, "port");
 
-  int clientfd, status_code;
+    if(is_same_server(host, port) == 0){
+    different_server(user, friend, host, port);
+  }else{
+
+    dictionary_t *friend_list = dictionary_get(user_list, friend);
+
+    //char **friend_list = split_string(friendlist, '\n');
+    const char **keys = dictionary_keys(friend_list);
+    //printf("friendlist %s\n", keys);
+
+    //add friend self
+    
+    add_friend(user, friend);
+
+    for (int i = 0; keys[i] != NULL; i++) {
+      add_friend(user, keys[i]);
+      //free(keys[i]);
+    }
+    //free(friend_list);  
+    char *body = strdup("");
+    printf("body %s", body);
+    serve_request(fd, body);
+    free(body);
+  }
+}
+
+
+static void different_server(char *user, char *friend, char *host, char *port){
   rio_t rio;
-  char buf[MAXLINE], *status_line, *version, *status, *desc;
+  char buf[MAXLINE];
 
   // connect to server
-  clientfd = Open_clientfd(host, port);
-  if (clientfd < 0) {
-    fprintf(stderr, "Connection to server failed.\n");
-    return;
-  }
-  rio_readinitb(&rio, clientfd);
-  printf("clientfd %d\n", clientfd);
+  int severfd = Open_clientfd(host, port);
+  char *request = append_strings("GET /friends?user=", friend, "HTTP/1.0\r\n\r\n", NULL);
+  size_t len = strlen(request);
+printf("376\n");
+  //sprintf(buf, "GET /friends?user=%s HTTP/1.1\r\n\r\n", friend);
+  Rio_writen(severfd, request, len);
+  rio_readinitb(&rio, severfd);
 
   // send GET request to server
-  sprintf(buf, "GET /friends?user=%s HTTP/1.1\r\n\r\n", friend);
-  Rio_writen(clientfd, buf, strlen(buf));
-  printf("hoge1\n");
-  // read status line
+  printf("382 %s\n", buf);
   Rio_readlineb(&rio, buf, MAXLINE);
-  status_line = strdup(buf);
-  printf("hoge2\n");
-  // parse status line
-  if (!parse_status_line(status_line, &version, &status, &desc)) {
-    fprintf(stderr, "Failed to parse status line.\n");
-    Close(clientfd);
-    free(status_line);
+  printf("412 %s\n", buf);
+  char **html = split_string(buf, ' ');
+printf("414 %d\n", atoi(html[1]) );
+  if (atoi(html[1]) != 200) {
+    for (int i = 0; html[i] != NULL; i++){
+        free(html[i]);
+    }
+    free(html);
     return;
   }
-
-  status_code = atoi(status);
-  free(version);
-  free(status);
-  free(desc);
-  free(status_line);
-
-  if (status_code != 200) {
-    fprintf(stderr, "Server responded with status code %d.\n", status_code);
-    Close(clientfd);
-    return;
-  }
-
-  // skip headder
+printf("394\n");
   do {
     Rio_readlineb(&rio, buf, MAXLINE);
-  } while (strcmp(buf, "\r\n"));
+  } while (strcmp(buf, "\r\n") != 0);
+printf("398\n");
+  do
+  {
+    ssize_t bytesRead = rio_readlineb(&rio, buf, MAXLINE);
+    if (bytesRead <= 0){
+      break;
+    }
+printf("405\n");
+    // Trim off the new line
+    buf[strlen(buf) - 1] = '\0';
+    //add friends
+    printf("396 %s\n", user);
+    printf("397 %s\n", buf);
 
-  // read friend list and parse
-  while (Rio_readlineb(&rio, buf, MAXLINE) > 0) {
-    buf[strcspn(buf, "\r\n")] = 0; // remove new line
     char **friends = split_string(buf, '\n');
     for (int i = 0; friends[i] != NULL; i++) {
         add_friend(user, friends[i]);
         free(friends[i]);
     }
-    free(friends);
+    //add_friend(user, buf, NULL);
+  }while (1);
+  
+  for (int i = 0; html[i] != NULL; i++){
+    free(html[i]);
   }
-
+  free(html);
+  free(request);
   //serve_request(clientfd, query);
-  Close(clientfd);
+  Close(severfd);
 }
 
 void add_friend(const char *user, const char *friend) {
@@ -426,7 +480,11 @@ void remove_friend(const char *user, const char *friend) {
         dictionary_remove(user_friend_list, friend);
     }
     if (friend_friend_list) {
-        dictionary_remove(friend_friend_list, friend);
+        dictionary_remove(friend_friend_list, user);
     }
+}
+
+int is_same_server(const char *host, const char *port) {
+    return (strcmp(host, "localhost") == 0) && (strcmp(port, server_port) == 0);
 }
 
